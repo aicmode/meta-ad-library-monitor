@@ -198,17 +198,61 @@ GET /api/health  →  {"status":"ok","demoMode":true,"time":"..."}
 
 デモURLを共有する場合の手順です。
 
+### Dockerイメージで動かします（Chromium同梱）
+
+本番では **リポジトリ直下の `Dockerfile`** を使います。ベースイメージは Playwright 公式の
+
+```
+mcr.microsoft.com/playwright:v1.62.1-noble
+```
+
+で、`package.json` / `package-lock.json` の `playwright` と**同一バージョンに固定**しています。このイメージには Chromium 本体と必要な共有ライブラリが `/ms-playwright` に同梱されているため、再デプロイのたびにブラウザを取得し直す必要がなく、
+
+```
+browserType.launch: Executable doesn't exist at ...
+```
+
+が発生しません（ビルド中に `npx playwright install chromium` も実行し、将来のバージョン差分に備えています）。
+
+> **playwright を更新するときは、`package.json` とこの Dockerfile のイメージタグを必ず同じコミットで揃えてください。** バージョン不一致は上記エラーの再発原因そのものです。
+
+`chromium.launch()` は Playwright に実行ファイルを解決させています。**`executablePath` はハードコードしません**（環境固有の絶対パスを埋め込むと環境差で壊れるため）。
+
+### Railway側の設定
+
 1. リポジトリを接続し、**必ず `DEMO_MODE=true`** を環境変数に設定する
-2. Chromiumのインストールをビルドに含める
-   - Build Command: `npm ci && npx playwright install --with-deps chromium && npm run build`
-   - Start Command: `npm start`
+2. Builder は **Dockerfile**（直下の `Dockerfile` と `railway.json` により自動選択されます）
+   - **Build Command / Start Command はどちらも不要**です。ダッシュボードに旧設定（`npx playwright install ...` を含むBuild Commandなど）が残っている場合は空にしてください
 3. 永続ボリュームを `/data` にマウントし、`DATABASE_PATH=/data/monitor.db` を設定する
    （ボリュームがないと再デプロイのたびにデータが消えます）
-4. Health Check Path に `/api/health` を設定する
+4. Health Check Path に `/api/health` を設定する（`railway.json` にも記述済み）
 5. デプロイ後、`https://<公開URL>/api/health` が `{"status":"ok","demoMode":true}` を返すことを確認する
 6. `/monitors` を開き、「Demo / Prototype」バッジが表示され、削除ボタンが無いことを確認してからURLを共有する
 
+`PORT` はRailwayが注入した値をそのまま使い、`0.0.0.0` で待ち受けます。
+
 手動チェックは実ブラウザを起動するため、メモリに余裕のあるプランを選んでください（Chromiumの実行に概ね1GB以上を推奨）。実行には20〜40秒かかるため、リクエストタイムアウトが短いホスティングでは失敗します。
+
+### Chromiumが起動できるかの確認
+
+デプロイ先やDockerコンテナ内で、ブラウザが本当に起動するかだけを確認できます。
+
+```bash
+npm run smoke:playwright            # 起動確認のみ（外部アクセスなし）
+npm run smoke:playwright -- --page  # 公開中の広告ライブラリを1ページだけ開く
+```
+
+### ローカルでのDocker確認
+
+```bash
+docker build -t meta-ad-library-monitor .
+
+docker run --rm -p 3000:3000 \
+  -e DEMO_MODE=true \
+  -e DATABASE_PATH=/data/monitor.db \
+  -v meta-ad-monitor-data:/data \
+  meta-ad-library-monitor
+```
 
 ---
 
@@ -288,6 +332,10 @@ src/
         ├── runCheck.ts             取得→差分→記録のオーケストレーション
         └── checkGuard.ts           同時実行ロックとcooldown
 scripts/validate-fetch.ts           取得方式の単体検証
+scripts/playwright-smoke.mjs        Chromiumが起動できるかの確認
 scripts/db-reset.mjs                ローカル専用のDB削除（DEMO_MODEでは拒否）
 docs/DATA_ACQUISITION.md            技術検証の記録
+Dockerfile                          本番イメージ（Playwright公式 + Chromium同梱）
+.dockerignore
+railway.json                        Railwayのビルダー指定とヘルスチェック
 ```

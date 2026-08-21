@@ -9,12 +9,13 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "validate:fetch": "tsx scripts/validate-fetch.ts",
-    "db:reset": "node scripts/db-reset.mjs"
+    "db:reset": "node scripts/db-reset.mjs",
+    "smoke:playwright": "node scripts/playwright-smoke.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "next": "^15.5.23",
-    "playwright": "^1.62.1",
+    "playwright": "1.62.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

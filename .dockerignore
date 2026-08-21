@@ -1,0 +1,23 @@
+# Build context hygiene: everything here is either rebuilt inside the image,
+# host-specific, or must never reach a deployed container.
+.git
+.gitignore
+.gitattributes
+node_modules
+.next
+out
+*.tsbuildinfo
+
+# Local SQLite database and scraper artifacts — the container uses the mounted
+# volume at /data instead.
+data
+validation-output
+
+# Secrets / local env. .env.example is intentionally kept out too; the running
+# container gets its configuration from the platform's environment variables.
+.env
+.env.*
+
+.DS_Store
+.vscode
+.idea
