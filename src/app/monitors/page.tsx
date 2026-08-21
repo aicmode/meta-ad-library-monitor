@@ -1,5 +1,6 @@
 import { MonitorManager } from "@/components/MonitorManager";
 import { listMonitors } from "@/lib/db/monitors";
+import { isDemoMode } from "@/lib/config/demo";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export default function MonitorsPage() {
           任意の広告主を登録し、手動で広告を取得できます。
         </p>
       </div>
-      <MonitorManager monitors={listMonitors()} />
+      <MonitorManager monitors={listMonitors()} demoMode={isDemoMode()} />
     </div>
   );
 }

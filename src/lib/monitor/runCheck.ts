@@ -3,6 +3,9 @@ import { getDb } from "../db/client";
 import { getMonitor, recordCheckOutcome } from "../db/monitors";
 import { upsertScrapedAds } from "../db/ads";
 import { scrapeAdLibrary } from "../adlib/scraper";
+import { toPublicMessage } from "../errors";
+
+export class MonitorNotFoundError extends Error {}
 
 export type CheckOutcome = {
   monitorId: string;
@@ -25,7 +28,7 @@ export type CheckOutcome = {
  */
 export async function runCheck(monitorId: string): Promise<CheckOutcome> {
   const monitor = getMonitor(monitorId);
-  if (!monitor) throw new Error(`監視対象が見つかりません: ${monitorId}`);
+  if (!monitor) throw new MonitorNotFoundError("監視対象が見つかりません。");
 
   const db = getDb();
   const runId = randomUUID();
@@ -69,7 +72,13 @@ export async function runCheck(monitorId: string): Promise<CheckOutcome> {
       durationMs: Date.now() - startedAt,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Only curated messages are persisted/returned; the raw error (which can
+    // contain file paths or Playwright internals) stays in the server log.
+    const message = toPublicMessage(
+      `check:${monitorId}`,
+      error,
+      "広告の取得に失敗しました。しばらく待ってから再試行してください。",
+    );
     finish("error", 0, 0, message);
 
     return {

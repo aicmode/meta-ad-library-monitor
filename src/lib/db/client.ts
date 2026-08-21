@@ -8,7 +8,16 @@ import { dirname } from "node:path";
  * touching route handlers or UI code.
  */
 
+/**
+ * Location of the SQLite file. Defaults to `data/monitor.db` (gitignored).
+ * Override with DATABASE_PATH when deploying — on a host with a mounted
+ * volume, point it at the volume so the data survives redeploys.
+ */
 const DB_PATH = process.env.DATABASE_PATH || "data/monitor.db";
+
+export function databasePath(): string {
+  return DB_PATH;
+}
 
 let db: Database.Database | undefined;
 
@@ -78,4 +87,21 @@ function migrate(database: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS check_runs_monitor ON check_runs (monitor_id, started_at DESC);
   `);
+
+  // Second line of defence against double registration: the same Ad Library
+  // target can only exist once, enforced by the database itself.
+  //
+  // A pre-existing database may already contain duplicates, in which case the
+  // index cannot be created. That is not fatal — createMonitor() also checks in
+  // application code — so we log and carry on rather than refusing to boot.
+  try {
+    database.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS monitors_normalized_url ON monitors (normalized_url);",
+    );
+  } catch {
+    console.warn(
+      "[db] monitors.normalized_url に重複があるため一意インデックスを作成できませんでした。" +
+        "重複はアプリケーション側でのみ検出されます。",
+    );
+  }
 }

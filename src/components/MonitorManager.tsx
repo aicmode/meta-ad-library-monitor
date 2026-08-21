@@ -6,7 +6,7 @@ import type { Monitor } from "@/lib/db/types";
 import { formatDateTime } from "@/lib/format";
 
 type CheckResult = {
-  status: "success" | "error";
+  status: "success" | "error" | "throttled";
   fetched: number;
   newCount: number;
   existingCount: number;
@@ -14,7 +14,13 @@ type CheckResult = {
   warnings?: string[];
 };
 
-export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
+export function MonitorManager({
+  monitors,
+  demoMode,
+}: {
+  monitors: Monitor[];
+  demoMode: boolean;
+}) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -22,6 +28,7 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
   const [submitting, setSubmitting] = useState(false);
   // Checks are slow (a real browser runs), so track which row is busy.
   const [checkingId, setCheckingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, CheckResult>>({});
   const [, startTransition] = useTransition();
 
@@ -29,7 +36,19 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setFormError(null);
+
+    // Mirror of the server-side rules, so obvious mistakes don't round-trip.
+    if (!name.trim()) {
+      setFormError("広告主名を入力してください。");
+      return;
+    }
+    if (!url.trim()) {
+      setFormError("広告ライブラリURLを入力してください。");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch("/api/monitors", {
@@ -37,7 +56,7 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, adLibraryUrl: url }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setFormError(data.error ?? "登録に失敗しました。");
         return;
@@ -53,21 +72,34 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
   }
 
   async function handleToggle(monitor: Monitor) {
-    await fetch(`/api/monitors/${monitor.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !monitor.enabled }),
-    });
-    refresh();
+    if (togglingId) return;
+    setTogglingId(monitor.id);
+    try {
+      await fetch(`/api/monitors/${monitor.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !monitor.enabled }),
+      });
+      refresh();
+    } finally {
+      setTogglingId(null);
+    }
   }
 
   async function handleDelete(monitor: Monitor) {
+    // Never rendered in demo mode; the API rejects it there regardless.
+    if (demoMode) return;
     if (!confirm(`「${monitor.name}」と保存済みの広告を削除しますか？`)) return;
     await fetch(`/api/monitors/${monitor.id}`, { method: "DELETE" });
     refresh();
   }
 
   async function handleCheck(monitor: Monitor) {
+    // One check at a time across the whole page: a second Chromium launch is
+    // the most expensive thing a mis-click can cause. The server enforces the
+    // same rule, this just keeps the UI honest about it.
+    if (checkingId) return;
+
     setCheckingId(monitor.id);
     setResults((prev) => {
       const next = { ...prev };
@@ -78,15 +110,33 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
       const res = await fetch(`/api/monitors/${monitor.id}/check`, {
         method: "POST",
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      // 409 = already running, 429 = still in cooldown.
+      if (res.status === 409 || res.status === 429) {
+        setResults((prev) => ({
+          ...prev,
+          [monitor.id]: {
+            status: "throttled",
+            fetched: 0,
+            newCount: 0,
+            existingCount: 0,
+            message:
+              data.error ??
+              "直前にチェック済みです。しばらく待ってから再実行してください。",
+          },
+        }));
+        return;
+      }
+
       setResults((prev) => ({
         ...prev,
         [monitor.id]: {
-          status: data.status ?? "error",
+          status: data.status === "success" ? "success" : "error",
           fetched: data.fetched ?? 0,
           newCount: data.newCount ?? 0,
           existingCount: data.existingCount ?? 0,
-          message: data.message ?? data.error ?? null,
+          message: data.message ?? data.error ?? "取得に失敗しました。",
           warnings: data.warnings,
         },
       }));
@@ -99,7 +149,7 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
           fetched: 0,
           newCount: 0,
           existingCount: 0,
-          message: "取得リクエストが失敗しました。",
+          message: "取得に失敗しました。しばらく待ってから再試行してください。",
         },
       }));
     } finally {
@@ -115,6 +165,11 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
           Meta広告ライブラリで広告主を検索し、そのURLをそのまま貼り付けてください。
           広告主指定（view_all_page_id）とキーワード検索（q）の両方に対応します。
         </p>
+        {demoMode && (
+          <p className="mt-2 text-xs text-muted">
+            デモ版では登録した監視対象を削除できません。同じURLの重複登録もできません。
+          </p>
+        )}
         <form onSubmit={handleCreate} className="mt-4 space-y-3">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
             <label className="block">
@@ -164,6 +219,8 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
             {monitors.map((monitor) => {
               const result = results[monitor.id];
               const busy = checkingId === monitor.id;
+              // A check elsewhere on the page also blocks this row's button.
+              const otherBusy = checkingId !== null && !busy;
               return (
                 <li
                   key={monitor.id}
@@ -201,26 +258,31 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 gap-2">
+                    <div className="flex shrink-0 flex-wrap gap-2">
                       <button
                         onClick={() => handleCheck(monitor)}
-                        disabled={busy}
+                        disabled={busy || otherBusy}
+                        aria-busy={busy}
                         className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                       >
                         {busy ? "取得中…" : "手動チェック"}
                       </button>
                       <button
                         onClick={() => handleToggle(monitor)}
-                        className="rounded border border-line px-3 py-1.5 text-sm hover:bg-canvas"
+                        disabled={togglingId !== null}
+                        className="rounded border border-line px-3 py-1.5 text-sm hover:bg-canvas disabled:opacity-50"
                       >
                         {monitor.enabled ? "無効化" : "有効化"}
                       </button>
-                      <button
-                        onClick={() => handleDelete(monitor)}
-                        className="rounded border border-line px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
-                      >
-                        削除
-                      </button>
+                      {/* Delete is not rendered at all in demo mode. */}
+                      {!demoMode && (
+                        <button
+                          onClick={() => handleDelete(monitor)}
+                          className="rounded border border-line px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
+                        >
+                          削除
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -235,7 +297,9 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
                       className={`mt-3 rounded px-3 py-2 text-sm ${
                         result.status === "success"
                           ? "bg-emerald-50 text-emerald-900"
-                          : "bg-red-50 text-red-800"
+                          : result.status === "throttled"
+                            ? "bg-amber-50 text-amber-900"
+                            : "bg-red-50 text-red-800"
                       }`}
                     >
                       {result.status === "success" ? (
@@ -244,6 +308,8 @@ export function MonitorManager({ monitors }: { monitors: Monitor[] }) {
                           <strong>{result.newCount}</strong> 件 ／ 既存{" "}
                           {result.existingCount} 件
                         </>
+                      ) : result.status === "throttled" ? (
+                        <>{result.message}</>
                       ) : (
                         <>取得失敗: {result.message}</>
                       )}

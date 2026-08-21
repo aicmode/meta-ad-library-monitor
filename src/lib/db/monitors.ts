@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "./client";
 import type { Monitor } from "./types";
 import { parseAdLibraryUrl } from "../adlib/url";
+import { INPUT_LIMITS } from "../config/demo";
+import { DuplicateMonitorError, ValidationError } from "../errors";
 
 type MonitorRow = {
   id: string;
@@ -49,30 +51,86 @@ export function getMonitor(id: string): Monitor | null {
   return row ? toMonitor(row) : null;
 }
 
+export function countMonitors(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS n FROM monitors")
+    .get() as { n: number };
+  return row.n;
+}
+
+/**
+ * Looks up an existing monitor by its *normalised* URL, so two paste-ins of
+ * the same target that differ only in query-string order or tracking params
+ * still collide.
+ */
+export function findMonitorByNormalizedUrl(
+  normalizedUrl: string,
+): Monitor | null {
+  const row = getDb()
+    .prepare("SELECT * FROM monitors WHERE normalized_url = ?")
+    .get(normalizedUrl) as MonitorRow | undefined;
+  return row ? toMonitor(row) : null;
+}
+
+/** Trims and rejects blank / oversized advertiser names. */
+export function validateMonitorName(raw: string | undefined): string {
+  const name = (raw ?? "").trim();
+  if (!name) throw new ValidationError("広告主名を入力してください。");
+  if (name.length > INPUT_LIMITS.NAME_MAX_LENGTH) {
+    throw new ValidationError(
+      `広告主名は${INPUT_LIMITS.NAME_MAX_LENGTH}文字以内で入力してください。`,
+    );
+  }
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    throw new ValidationError("広告主名に使用できない文字が含まれています。");
+  }
+  return name;
+}
+
 export function createMonitor(input: {
   name: string;
   adLibraryUrl: string;
 }): Monitor {
+  const name = validateMonitorName(input.name);
   // Throws AdLibraryUrlError for anything we can't scrape — surfaced to the UI.
   const target = parseAdLibraryUrl(input.adLibraryUrl);
+
+  const existing = findMonitorByNormalizedUrl(target.normalizedUrl);
+  if (existing) {
+    throw new DuplicateMonitorError(
+      `このURLはすでに「${existing.name}」として登録されています。`,
+    );
+  }
+
   const id = randomUUID();
 
-  getDb()
-    .prepare(
-      `INSERT INTO monitors
-         (id, name, ad_library_url, normalized_url, target_kind, target_key, country, enabled, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    )
-    .run(
-      id,
-      input.name.trim(),
-      input.adLibraryUrl.trim(),
-      target.normalizedUrl,
-      target.kind,
-      target.pageId ?? target.query ?? null,
-      target.country,
-      new Date().toISOString(),
-    );
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO monitors
+           (id, name, ad_library_url, normalized_url, target_kind, target_key, country, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run(
+        id,
+        name,
+        input.adLibraryUrl.trim(),
+        target.normalizedUrl,
+        target.kind,
+        target.pageId ?? target.query ?? null,
+        target.country,
+        new Date().toISOString(),
+      );
+  } catch (error) {
+    // Race between the check above and the insert: the unique index catches it.
+    if (
+      error instanceof Error &&
+      /UNIQUE constraint failed/i.test(error.message)
+    ) {
+      throw new DuplicateMonitorError("このURLはすでに登録されています。");
+    }
+    throw error;
+  }
 
   return getMonitor(id)!;
 }

@@ -25,6 +25,7 @@
 - ダッシュボード（監視対象数・NEW件数・保存済み件数・最終チェック日時）
 - 広告一覧（NEWフィルタ、広告主フィルタ、メディアプレビュー、元広告リンク）
 - 取得方式の単体検証スクリプト
+- 外部共有用のDemo Mode（削除禁止・重複登録防止・連打防止・cooldown）
 
 ---
 
@@ -93,7 +94,9 @@ npm run dev
 # http://localhost:3000
 ```
 
-SQLiteのDBファイルは `data/monitor.db` に自動生成されます（gitignore済み）。
+SQLiteのDBファイルは `data/monitor.db` に自動生成されます（gitignore済み）。保存先は環境変数 `DATABASE_PATH` で変更できます。
+
+環境変数は `.env.example` を `.env.local` にコピーして設定してください。
 
 ### 使い方
 
@@ -113,6 +116,109 @@ npm run validate:fetch -- "https://www.facebook.com/ads/library/?...&country=JP&
 ```
 
 項目ごとの取得率が表示され、全件のJSONが `validation-output/` に保存されます。Metaの仕様変更を検知するため、定期的な実行を推奨します。
+
+
+---
+
+## Demo Mode（外部共有用）
+
+社外の方に試作版を触ってもらうための安全モードです。環境変数で切り替えます。
+
+```bash
+DEMO_MODE=true npm start
+```
+
+`DEMO_MODE=true` のときだけ、以下の制御が有効になります。
+
+| 制御 | 内容 |
+|---|---|
+| 削除不可 | 監視対象の削除ボタンを表示せず、`DELETE /api/monitors/:id` も **HTTP 403** で拒否します |
+| 一括削除の禁止 | `npm run db:reset` は `DEMO_MODE=true` では実行を拒否します（Web UIからは元々実行できません） |
+| 登録数の上限 | 監視対象は最大30件まで（それ以上は403） |
+| 重複登録防止 | 同一の広告ライブラリURLは二重登録できません（HTTP 409） |
+| 手動チェック連打防止 | 実行中はボタンを無効化。サーバー側でも監視対象ごとにロックし、同時実行を **HTTP 409** で拒否します |
+| cooldown | 同じ監視対象は前回チェックから **60秒間** 再実行できません（**HTTP 429**、`Retry-After` ヘッダ付き） |
+| 安全なエラー表示 | 内部エラーの詳細・ファイルパス・SQL・stack traceは画面へ出しません。詳細はサーバーのターミナルにのみ記録します |
+| Demo表示 | 画面上部に「Demo / Prototype」バッジと注意書きを表示します |
+
+`DEMO_MODE` が未設定または `false` のときは、従来どおりの管理機能（削除を含む）がそのまま使えます。
+
+### 相手ができること / できないこと
+
+**できること**：ダッシュボード閲覧 / 監視対象閲覧 / 広告一覧閲覧・フィルタ / 元広告を開く / 監視対象の追加 / 有効・無効の切替 / 手動チェック
+
+**できないこと**：監視対象の削除 / 広告データの削除 / DB初期化 / システム設定の変更
+
+認証機能は実装していません。共有するURLは、渡した相手の範囲に留めてください。
+
+### 入力チェック
+
+監視対象の追加時、以下を **サーバー側で** 検証します（DEMO_MODEに関係なく常時有効）。
+
+- 広告主名が必須（空白のみは不可）／80文字以内／制御文字不可
+- 広告ライブラリURLが必須／1000文字以内／制御文字不可
+- `http` / `https` 以外のscheme（`javascript:` `data:` `file:` 等）を拒否
+- ホストは `facebook.com` 系のみ、パスは `/ads/library` 配下のみ
+- `view_all_page_id`（数値）または `q`（キーワード）のどちらかが必要
+- 正規化後のURLで重複を検知（DB側にも一意インデックス）
+
+---
+
+## データの保護とバックアップ
+
+- DBファイルの場所：既定は `data/monitor.db`（WALモードのため `-wal` / `-shm` も同じ場所に生成されます）
+- `DATABASE_PATH` で変更可能。デプロイ先では **永続ボリューム上のパス** を指定してください
+- `data/` は `.gitignore` 済みです。**DBファイルをGitへコミットしないでください**
+- バックアップ方針：デモ公開前と、まとまったデータが溜まった時点で、`data/` ディレクトリごとコピーして退避してください
+
+```bash
+# 停止した状態でコピーするのが最も確実です
+cp -r data "backup-$(date +%Y%m%d-%H%M)"
+```
+
+- 復旧：退避したファイルを `data/` へ戻すだけです
+- DBファイルを削除するとスキーマは自動で再作成されます（データは失われます）
+- ローカルでのリセット：`npm run db:reset`（`DEMO_MODE=true` では拒否されます）
+
+自動バックアップは実装していません。試作・検証用途のため、失われて困るデータは置かない前提で運用してください。
+
+---
+
+## Health Check
+
+```
+GET /api/health  →  {"status":"ok","demoMode":true,"time":"..."}
+```
+
+プロセスの生存とSQLiteへの到達性のみを確認します。**Playwrightの起動やMeta広告ライブラリへのアクセスは一切行いません**。ホスティング側のヘルスチェックに設定しても取得処理は発生しません。
+
+---
+
+## デプロイ（Railway等）
+
+デモURLを共有する場合の手順です。
+
+1. リポジトリを接続し、**必ず `DEMO_MODE=true`** を環境変数に設定する
+2. Chromiumのインストールをビルドに含める
+   - Build Command: `npm ci && npx playwright install --with-deps chromium && npm run build`
+   - Start Command: `npm start`
+3. 永続ボリュームを `/data` にマウントし、`DATABASE_PATH=/data/monitor.db` を設定する
+   （ボリュームがないと再デプロイのたびにデータが消えます）
+4. Health Check Path に `/api/health` を設定する
+5. デプロイ後、`https://<公開URL>/api/health` が `{"status":"ok","demoMode":true}` を返すことを確認する
+6. `/monitors` を開き、「Demo / Prototype」バッジが表示され、削除ボタンが無いことを確認してからURLを共有する
+
+手動チェックは実ブラウザを起動するため、メモリに余裕のあるプランを選んでください（Chromiumの実行に概ね1GB以上を推奨）。実行には20〜40秒かかるため、リクエストタイムアウトが短いホスティングでは失敗します。
+
+---
+
+## 環境変数
+
+| 変数 | 既定 | 用途 |
+|---|---|---|
+| `DEMO_MODE` | 未設定（=false） | `true` で外部共有用の安全モード |
+| `DATABASE_PATH` | `data/monitor.db` | SQLiteファイルの保存先 |
+| `PORT` | `3000` | 待ち受けポート |
 
 ---
 
@@ -163,7 +269,8 @@ src/
 │   ├── page.tsx                    ダッシュボード
 │   ├── monitors/page.tsx           監視対象
 │   ├── ads/page.tsx                広告一覧
-│   └── api/monitors/...            登録・切替・削除・手動チェック
+│   ├── api/monitors/...            登録・切替・削除・手動チェック
+│   └── api/health/route.ts         死活監視（Playwrightを起動しない）
 ├── components/
 │   └── MonitorManager.tsx          監視対象の操作UI
 └── lib/
@@ -171,11 +278,16 @@ src/
     │   ├── url.ts                  URL検証・正規化
     │   ├── scraper.ts              Playwrightによる取得と抽出
     │   └── types.ts
+    ├── config/demo.ts              Demo Modeの判定と各種上限値
+    ├── errors.ts                   内部エラーと利用者向けメッセージの境界
     ├── db/                         永続化層（差し替え可能）
     │   ├── client.ts               SQLite接続とスキーマ
     │   ├── monitors.ts
     │   └── ads.ts                  保存とNEW判定
-    └── monitor/runCheck.ts         取得→差分→記録のオーケストレーション
+    └── monitor/
+        ├── runCheck.ts             取得→差分→記録のオーケストレーション
+        └── checkGuard.ts           同時実行ロックとcooldown
 scripts/validate-fetch.ts           取得方式の単体検証
+scripts/db-reset.mjs                ローカル専用のDB削除（DEMO_MODEでは拒否）
 docs/DATA_ACQUISITION.md            技術検証の記録
 ```

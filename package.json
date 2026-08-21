@@ -9,7 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "validate:fetch": "tsx scripts/validate-fetch.ts",
-    "db:reset": "rm -f data/monitor.db"
+    "db:reset": "node scripts/db-reset.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

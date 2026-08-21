@@ -7,6 +7,8 @@
  *   - keyword search:    ?q=<terms>&search_type=keyword_unordered
  */
 
+import { INPUT_LIMITS } from "../config/demo";
+
 export type AdLibraryTarget = {
   kind: "page" | "keyword";
   /** Advertiser page id, for kind === "page". */
@@ -35,11 +37,29 @@ export function parseAdLibraryUrl(input: string): AdLibraryTarget {
   const trimmed = input.trim();
   if (!trimmed) throw new AdLibraryUrlError("URLを入力してください。");
 
+  if (trimmed.length > INPUT_LIMITS.URL_MAX_LENGTH) {
+    throw new AdLibraryUrlError(
+      `URLが長すぎます（${INPUT_LIMITS.URL_MAX_LENGTH}文字以内）。`,
+    );
+  }
+  // Control characters can smuggle line breaks past logging/DOM sinks.
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new AdLibraryUrlError("URLに使用できない文字が含まれています。");
+  }
+
   let url: URL;
   try {
     url = new URL(trimmed);
   } catch {
     throw new AdLibraryUrlError("URLの形式が正しくありません。");
+  }
+
+  // Reject javascript:, data:, file: and every other non-web scheme before
+  // anything else looks at the value.
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new AdLibraryUrlError(
+      "http / https 以外のURLは登録できません。",
+    );
   }
 
   if (!AD_LIBRARY_HOSTS.has(url.hostname)) {
@@ -75,6 +95,12 @@ export function parseAdLibraryUrl(input: string): AdLibraryTarget {
   }
 
   if (query) {
+    if (query.trim().length === 0) {
+      throw new AdLibraryUrlError("検索キーワード（q）が空です。");
+    }
+    if (query.length > 200) {
+      throw new AdLibraryUrlError("検索キーワード（q）が長すぎます。");
+    }
     out.searchParams.set("q", query);
     out.searchParams.set(
       "search_type",

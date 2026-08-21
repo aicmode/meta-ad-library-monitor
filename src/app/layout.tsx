@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
+import { isDemoMode } from "@/lib/config/demo";
 
 export const metadata: Metadata = {
   title: "Meta Ad Library Monitor",
@@ -18,9 +19,23 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const demo = isDemoMode();
+
   return (
     <html lang="ja">
       <body className="min-h-screen">
+        {demo && (
+          <div className="border-b border-line bg-canvas">
+            <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2">
+              <span className="rounded bg-ink px-2 py-0.5 text-xs font-semibold text-white">
+                Demo / Prototype
+              </span>
+              <span className="text-xs text-muted">
+                試作版のため、取得結果や動作がMeta側の変更により不安定になる場合があります。
+              </span>
+            </div>
+          </div>
+        )}
         <header className="border-b border-line bg-surface">
           <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-4">
             <Link href="/" className="text-base font-semibold tracking-tight">
