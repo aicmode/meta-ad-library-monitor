@@ -218,6 +218,27 @@ browserType.launch: Executable doesn't exist at ...
 
 `chromium.launch()` は Playwright に実行ファイルを解決させています。**`executablePath` はハードコードしません**（環境固有の絶対パスを埋め込むと環境差で壊れるため）。
 
+### better-sqlite3 のネイティブビルド依存
+
+Dockerfile では `npm ci` の**前に** `python3` / `make` / `g++` を導入しています。
+
+```
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+`better-sqlite3` 13.x はビルド済みバイナリを同梱していますが、パッケージ内に `binding.gyp` を持ち install スクリプトを持たないため、**npm が `npm ci` の中で自動的に `node-gyp rebuild` を実行します**。Playwright公式イメージにはコンパイラが入っていないため、これが以下のビルド失敗になります。
+
+```
+npm error gyp ERR! stack Error: not found: make
+```
+
+必要最小限は node-gyp が要求する `python3`（ジェネレータ）・`make`・`g++` の3つで、`g++` が gcc と libc6-dev を連れてきます。`build-essential` は本プロジェクトで使わないパッケージまで含むため採用していません。`rm -rf /var/lib/apt/lists/*` でaptキャッシュは破棄します。
+
+この依存は**Dockerfileに書くことが必須**です。RailwayのBuild Commandや、コンソールから手打ちした `apt install` / `npm rebuild` は再デプロイ・再起動で失われ、再現性がありません。**Railway側のBuild Command / Start Commandは空欄のまま**にしてください。
+
 ### Railway側の設定
 
 1. リポジトリを接続し、**必ず `DEMO_MODE=true`** を環境変数に設定する

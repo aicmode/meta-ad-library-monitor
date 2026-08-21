@@ -14,6 +14,28 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 WORKDIR /app
 
+# Native build toolchain for better-sqlite3.
+#
+# better-sqlite3 13.x ships prebuilt binaries in its tarball but carries a
+# binding.gyp and no install script, so npm runs `node-gyp rebuild` for it
+# during `npm ci`. The Playwright image has no compiler, which is exactly the
+# Railway build failure:
+#
+#   npm error gyp ERR! stack Error: not found: make
+#
+# python3 (node-gyp's generator), make, and g++ are the minimum node-gyp needs;
+# g++ pulls in gcc and libc6-dev. build-essential is deliberately avoided --
+# it adds dpkg-dev and friends that nothing here uses.
+#
+# This MUST stay above `npm ci`, and it belongs in the image rather than in a
+# platform Build Command so every rebuild and restart reproduces it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        make \
+        g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first so a source-only change reuses this layer.
 # better-sqlite3 is compiled/fetched here for this image's platform.
 COPY package.json package-lock.json ./
